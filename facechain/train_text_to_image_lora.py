@@ -186,6 +186,7 @@ def get_rot(image):
 
 
 def prepare_dataset(instance_images: list, output_dataset_dir):
+    # 检测预处理之后的图片文件夹是否存在，不存在重新创建
     if not os.path.exists(output_dataset_dir):
         os.makedirs(output_dataset_dir)
     for i, temp_path in enumerate(instance_images):
@@ -208,6 +209,7 @@ def prepare_dataset(instance_images: list, output_dataset_dir):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
+    # ModelScope模型仓库的stable diffusion基模型，该模型会用于训练，可以不修改
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
@@ -215,6 +217,7 @@ def parse_args():
         required=True,
         help="Path to pretrained model or model identifier.",
     )
+    # 该基模型的版本号，可以不修改
     parser.add_argument(
         "--revision",
         type=str,
@@ -222,6 +225,7 @@ def parse_args():
         required=False,
         help="Revision of pretrained model identifier.",
     )
+    # 该基模型包含了多个不同风格的子目录，其中使用了film / film目录中的风格模型，可以不修改
     parser.add_argument(
         "--sub_path",
         type=str,
@@ -229,6 +233,7 @@ def parse_args():
         required=False,
         help="The sub model path of the `pretrained_model_name_or_path`",
     )
+    # 本参数需要用实际值替换，本参数是一个本地文件目录，包含了用来训练和生成的原始照片
     parser.add_argument(
         "--dataset_name",
         type=str,
@@ -253,6 +258,7 @@ def parse_args():
             " must exist to provide the captions for the images. Ignored if `dataset_name` is specified."
         ),
     )
+    # 预处理之后的图片文件夹，这个参数需要在推理中被传入相同的值，可以不修改
     parser.add_argument(
         "--output_dataset_name",
         type=str,
@@ -297,6 +303,7 @@ def parse_args():
             "value if set."
         ),
     )
+    # 训练生成保存模型weights的文件夹，可以不修改
     parser.add_argument(
         "--output_dir",
         type=str,
@@ -309,6 +316,7 @@ def parse_args():
         default=None,
         help="The directory where the downloaded models and datasets will be stored.",
     )
+    # 随机种子，默认 42
     parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
     parser.add_argument(
         "--resolution",
@@ -531,26 +539,41 @@ DATASET_NAME_MAPPING = {
 def main():
 
     args = parse_args()
+    # 模型输出文件夹+logs，logs 为默认参数
     logging_dir = os.path.join(args.output_dir, args.logging_dir)
+    # 删除现有模型目录
     shutil.rmtree(args.output_dir, ignore_errors=True)
+    # 创建新的模型目录
     os.makedirs(args.output_dir)
 
     if args.dataset_name is not None:
         # if dataset_name is None, then it's called from the gradio
         # the data processing will be executed in the app.py to save the gpu memory.
         print('All input images:', args.dataset_name)
+        # 用于训练的数据集文件路径列表
         args.dataset_name = [os.path.join(args.dataset_name, x) for x in os.listdir(args.dataset_name)]
+        # 删除预处理之后的图片文件夹
         shutil.rmtree(args.output_dataset_name, ignore_errors=True)
+        # 对训练数据集图像进行 PTL 预处理，颜色转换、图像反转
         prepare_dataset(args.dataset_name, args.output_dataset_name)
         ## Our data process fn
         data_process_fn(input_img_dir=args.output_dataset_name, use_data_process=True)
 
+    # 调整 训练数据集文件夹路径 为 预处理后的图像文件夹路径+_labeled
     args.dataset_name = args.output_dataset_name + '_labeled'
 
+    # 加速器配置
+    # project_dir 设置项目路径
+    # logging_dir 设置日志路径
     accelerator_project_config = ProjectConfiguration(
         total_limit=args.checkpoints_total_limit, project_dir=args.output_dir, logging_dir=logging_dir
     )
 
+    # 加速优化机器学习训练过程
+    # gradient_accumulation_steps：用于设置梯度累积的步数。这可以帮助减少显存使用，特别是在显存有限的情况下。
+    # mixed_precision：用于启用或禁用混合精度训练。当设置为True时，使用混合精度进行计算，可以加速训练并减少显存使用。
+    # log_with：用于设置训练日志的输出方式。可以设置为"wandb"或其他可用的日志记录工具。
+    # project_config：用于设置项目相关参数的ProjectConfiguration对象。
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -579,10 +602,12 @@ def main():
         diffusers.utils.logging.set_verbosity_error()
 
     # If passed along, set the training seed now.
+    # 设置随机种子，默认 42
     if args.seed is not None:
         set_seed(args.seed)
 
     # Handle the repository creation
+    # 若为主进程，创建模型输出文件夹
     if accelerator.is_main_process:
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
@@ -593,22 +618,32 @@ def main():
             ).repo_id
 
     ## Download foundation Model
+    # 下载模型
     model_dir = snapshot_download(args.pretrained_model_name_or_path,
                                   revision=args.revision,
                                   user_agent={'invoked_by': 'trainer', 'third_party': 'facechain'})
 
     if args.sub_path is not None and len(args.sub_path) > 0:
+        # 预训练模型路径
         model_dir = os.path.join(model_dir, args.sub_path)
 
     # Load scheduler, tokenizer and models.
+    # 加载模型？
     noise_scheduler = DDPMScheduler.from_pretrained(model_dir, subfolder="scheduler")
+    # 加载预训练
+    # CLIPTokenizer是一个用于将文本转换成模型可接受的输入表示的工具，它能够将文本分词、编码成数字序列等操作。
     tokenizer = CLIPTokenizer.from_pretrained(
         model_dir, subfolder="tokenizer"
     )
+    # 加载预训练的文本编码模型
+    # 加载CLIPTextModel模型是为了进行文本的特征提取和表示学习。CLIPTextModel是一个用于将文本转换成固定长度的向量表示的模型，它能够将文本编码成语义空间中的向量表示。
     text_encoder = CLIPTextModel.from_pretrained(
         model_dir, subfolder="text_encoder"
     )
+    # 加载预训练的变分自动编码器（VAE）模型。
+    # 变分自动编码器（VAE）是一种生成模型，用于学习数据的潜在表示。它由一个编码器和一个解码器组成，通过最大化潜在空间中样本的对数似然来训练模型。VAE 可以用于生成新的样本，进行数据压缩和降维，以及学习数据的分布特征。
     vae = AutoencoderKL.from_pretrained(model_dir, subfolder="vae")
+    # UNet是一种用于图像分割的卷积神经网络模型，它具有编码器-解码器结构，能够对输入图像进行像素级别的分割。UNet2DConditionModel是基于UNet的条件模型，它可以根据附加的条件信息（如标签、掩码等）进行图像分割。
     unet = UNet2DConditionModel.from_pretrained(
         model_dir, subfolder="unet"
     )

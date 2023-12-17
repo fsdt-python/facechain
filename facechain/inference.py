@@ -29,8 +29,11 @@ def data_process_fn(input_img_dir, use_data_process):
     if use_data_process:
         ## TODO
 
+        # 创建子进程用于执行 _data_process_fn_process 函数
         _process = multiprocessing.Process(target=_data_process_fn_process, args=(input_img_dir,))
+        # 启动子进程
         _process.start()
+        # 阻塞主进程，等待子进程执行结束
         _process.join()
 
     return os.path.join(str(input_img_dir) + '_labeled', "metadata.jsonl")
